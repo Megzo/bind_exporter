@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"math"
 	"net/http"
 	_ "net/http/pprof"
@@ -18,6 +17,7 @@ import (
 	"github.com/digitalocean/bind_exporter/bind/v3"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/log"
 	"github.com/prometheus/common/version"
 )
@@ -433,11 +433,26 @@ func (s *statisticGroups) Set(value string) error {
 	return nil
 }
 
+func wrapper(bindVersion *string, bindTimeout *time.Duration, groups statisticGroups) http.Handler{
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target := r.URL.Query().Get("target")
+		bindURI := "http://" + target + ":8053/"
+		registry := prometheus.NewRegistry()
+		registry.MustRegister(
+			version.NewCollector(exporter),
+			NewExporter(*bindVersion, bindURI, *bindTimeout, groups),
+		)
+		// Delegate http serving to Prometheus client library, which will call collector.Collect.
+		h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+		h.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	var (
 		bindURI       = flag.String("bind.stats-url", "http://localhost:8053/", "HTTP XML API address of an Bind server.")
 		bindTimeout   = flag.Duration("bind.timeout", 10*time.Second, "Timeout for trying to get stats from Bind.")
-		bindPidFile   = flag.String("bind.pid-file", "", "Path to Bind's pid file to export process information.")
 		bindVersion   = flag.String("bind.stats-version", "auto", "BIND statistics version. Can be detected automatically. Available: [xml.v2, xml.v3, auto]")
 		showVersion   = flag.Bool("version", false, "Print version information.")
 		listenAddress = flag.String("web.listen-address", ":9119", "Address to listen on for web interface and telemetry.")
@@ -460,24 +475,10 @@ func main() {
 		version.NewCollector(exporter),
 		NewExporter(*bindVersion, *bindURI, *bindTimeout, groups),
 	)
-	if *bindPidFile != "" {
-		procExporter := prometheus.NewProcessCollectorPIDFn(
-			func() (int, error) {
-				content, err := ioutil.ReadFile(*bindPidFile)
-				if err != nil {
-					return 0, fmt.Errorf("Can't read pid file: %s", err)
-				}
-				value, err := strconv.Atoi(strings.TrimSpace(string(content)))
-				if err != nil {
-					return 0, fmt.Errorf("Can't parse pid file: %s", err)
-				}
-				return value, nil
-			}, namespace)
-		prometheus.MustRegister(procExporter)
-	}
 
 	log.Info("Starting Server: ", *listenAddress)
 	http.Handle(*metricsPath, prometheus.Handler())
+	http.Handle("/bind", wrapper(bindVersion, bindTimeout, groups))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
              <head><title>Bind Exporter</title></head>
