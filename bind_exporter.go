@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	_ "net/http/pprof"
 	"os"
 	"strconv"
@@ -437,7 +438,7 @@ func wrapper(bindVersion *string, bindTimeout *time.Duration, groups statisticGr
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		target := r.URL.Query().Get("target")
-		bindURI := "http://" + target + ":8053/"
+		bindURI := "http://" + url.QueryEscape(target) + ":8053/"
 		registry := prometheus.NewRegistry()
 		registry.MustRegister(
 			version.NewCollector(exporter),
